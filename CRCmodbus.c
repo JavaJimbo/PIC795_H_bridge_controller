@@ -87,7 +87,11 @@ unsigned short CRCincoming, CRCcheck;
     Cconvert.b[1] = ptrPacketData[dataLength+1];
     CRCincoming = Cconvert.integer;    
     CRCcheck = CalculateModbusCRC(ptrPacketData, dataLength);
-    // printf("\rPack length: %d bytes, CRC IN: %d, CRC CHECK: %d", dataLength, CRCincoming, CRCcheck);    
-    if (CRCcheck != CRCincoming) return false;
+    
+    if (CRCcheck != CRCincoming) 
+    {
+        printf("\rPack length: %d bytes, CRC IN: %d, CRC CHECK: %d", dataLength, CRCincoming, CRCcheck);    
+        return false;
+    }
     else return true;
 }

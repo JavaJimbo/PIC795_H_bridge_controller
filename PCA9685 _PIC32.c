@@ -107,7 +107,7 @@ unsigned char initializePCA9685(unsigned char device)
 { 
     unsigned char dataByte;
 
-    initI2C(PCABUS);
+    // initI2C(PCABUS);
     
     if (!PCAWriteByte (device, ALL_LED_ON, 0)) return FALSE;
     if (!PCAWriteByte (device, ALL_LED_ON+1, 0)) return FALSE;

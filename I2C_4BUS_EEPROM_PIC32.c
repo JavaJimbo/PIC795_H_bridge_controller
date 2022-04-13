@@ -4,6 +4,7 @@
  * Key words: "PIC32 + C32 can't read I2C BUS"
  * SOURCE: https://www.electro-tech-online.com/threads/pic32-c32-cant-read-i2c-bus.145272/
  * 8-14-19 JBS
+ * 4-6-22 Cleaned up, return 0 for no errors, Check for busy bus
  */
 
 // #include "Defs.h"
@@ -17,8 +18,10 @@
 #define RD 1
 #define WR 0
 
+#define NUM_EEPROM_RETRIES 100
+
 void initI2C(unsigned char busID)
-{                   
+{             
     I2CConfigure(busID, I2C_ENABLE_HIGH_SPEED | I2C_STOP_IN_IDLE | I2C_ENABLE_SMB_SUPPORT);
     I2CSetFrequency(busID, GetPeripheralClock(), 400000);
     I2CEnable(busID, TRUE);
@@ -76,11 +79,7 @@ void StopTransfer(unsigned char busID)
     do
     {
         status = I2CGetStatus(busID);
-        //char chip[16];
-        //sprintf(chip,"Stop: %x",status);
         DelayMs(1);
-        // print_error(chip);
-
     } while ( !(status & I2C_STOP) );
 }
 
@@ -90,7 +89,7 @@ void print_status(unsigned char busID)
 {
     I2C_STATUS  status;
     status = I2CGetStatus(busID);    
-    printf("STATUS: %x",status);    
+    printf("\rSTATUS: %x",status);    
     DelayMs(500);
     I2CClearStatus (busID, I2C_ARBITRATION_LOSS);
 }
@@ -181,7 +180,7 @@ unsigned char dataByte = 0;
 }
 
 /*******************************************************************
- *	Name:	EepromWriteBlock()
+ *	Name:	WriteEEpromBlock()
  *	
  *	Inputs:
  *	device - I2C address of the chip
@@ -189,7 +188,7 @@ unsigned char dataByte = 0;
  *	*ptrData - pointer to data string to be stored
  *	numBytes - numBytes - Number of bytes to be written
  *	
- *  Returns: 1 if successful, 0 if EEPROM does not ACKnowledge a command.
+ *  Returns: 0- if successful
  * 
  *	A block of data with length numBytes is sent to the EEPROM.  
  *  Data is written one byte at a time
@@ -197,42 +196,47 @@ unsigned char dataByte = 0;
  *	As each byte is written, an ACKnowledge bit is read from EEPROM
  *	
  *******************************************************************/
-unsigned char EepromWriteBlock(unsigned char busID, unsigned char device, unsigned short startAddress, unsigned char *ptrData, unsigned short numBytes) 
+unsigned char WriteEEpromBlock(unsigned char busID, unsigned char device, unsigned short startAddress, unsigned char *ptrData, unsigned short numBytes) 
 {
     unsigned char addressHigh, addressLow;
     unsigned short i;    
+    short retryCounter = 0;
+    
+    if (numBytes > EEBLOCKSIZE) return 1;
     
     EEPROM_WP = 0;
     DelayMs(10);
 
     addressHigh = (unsigned char) ((startAddress & 0xFF00) >> 8);
     addressLow = (unsigned char) (startAddress & 0x00FF);
+    
+    do {
+        StartTransfer(busID, false);
+        if (TransmitOneByte(busID, device | WR))
+        {
+            if (I2CGetACK(busID) == 0) break; // Get ACK from EEPROM
+        }
+        StopTransfer(busID);
+        retryCounter++;
+    } while (retryCounter++ < NUM_EEPROM_RETRIES);
+    if (retryCounter >= 100) return 1;    
 
-    StartTransfer(busID, false);
+    if (!TransmitOneByte(busID, addressHigh)) return 2;
+    if (I2CGetACK(busID)) return 3; // Get ACK from EEPROM
 
-    if (!TransmitOneByte(busID, device | WR)) return 0;
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    //if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM
-
-    if (!TransmitOneByte(busID, addressHigh)) return 0;
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    //if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM    
-
-    if (!TransmitOneByte(busID, addressLow)) return 0;
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    //if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM    
-
+    if (!TransmitOneByte(busID, addressLow)) return 4;
+    if (I2CGetACK(busID)) return 5; // Get ACK from EEPROM
 
     // Now send block of data
     for (i = 0; i < numBytes; i++) {
-        if (!TransmitOneByte(busID, ptrData[i])) return 0;
-        if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-        //if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM        
+        if (!TransmitOneByte(busID, ptrData[i])) return 6;
+        if (I2CGetACK(busID)) return 9; // Get ACK from EEPROM
+                
     }
     StopTransfer(busID);
     EEPROM_WP = 1;
 
-    return (1);
+    return (0);
 }
 
 /* Reads a block of bytes from EEPROM beginning at startAddress
@@ -242,39 +246,40 @@ unsigned char EepromWriteBlock(unsigned char busID, unsigned char device, unsign
  *	numBytes - numBytes - Number of bytes to be written
  * 
  *  Output: *ptrData - pointer to data read from EEPROM 
- *  Returns: 1 if successful, 0 if EEPROM does not ACKnowledge a command.
+ *  Returns: 0 if successful
  */
-unsigned char EepromReadBlock(unsigned char busID, unsigned char device, unsigned short startAddress, unsigned char *ptrData, unsigned char numBytes) 
+unsigned char ReadEEpromBlock(unsigned char busID, unsigned char device, unsigned short startAddress, unsigned char *ptrData, unsigned char numBytes) 
 {
     unsigned char addressHigh, addressLow;
     unsigned char i;
+    short retryCounter = 0;
 
     addressHigh = (unsigned char) ((startAddress & 0xFF00) >> 8);
     addressLow = (unsigned char) (startAddress & 0x00FF);    
 
     INTClearFlag(INT_SOURCE_I2C(busID));
     
-    StartTransfer(busID, false);
+    do {
+        StartTransfer(busID, false);
+        if (TransmitOneByte(busID, device | WR))
+        {
+            if (I2CGetACK(busID) == 0) break; // Get ACK from EEPROM
+        }
+        StopTransfer(busID);
+        retryCounter++;
+    } while (retryCounter++ < NUM_EEPROM_RETRIES);
+    if (retryCounter >= 100) return 1;    
 
-    if (!TransmitOneByte(busID, device | WR)) return 0; // Send WRITE command and I2C device address
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    //if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM
+    if (!TransmitOneByte(busID,  addressHigh)) return 2; // Send EEPROM high address byte
+    if (I2CGetACK(busID)) return 3; // Get ACK from EEPROM
 
-    if (!TransmitOneByte(busID,  addressHigh)) return 0; // Send EEPROM high address byte
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    //if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM    
-
-    if (!TransmitOneByte(busID, addressLow)) return 0; // Send EEPROM low address byte
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    //if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM    
+    if (!TransmitOneByte(busID, addressLow)) return 4; // Send EEPROM low address byte
+    if (I2CGetACK(busID)) return 5; // Get ACK from EEPROM
 
     StartTransfer(busID, true); // Now send START sequence again:
-    //while(!INTGetFlag(INT_SOURCE_I2C(busID)) );
-    //INTClearFlag(INT_SOURCE_I2C(busID));
     
-    if (!TransmitOneByte(busID, device | RD)) return 0; // Now send ID with READ Command    
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    // if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM
+    if (!TransmitOneByte(busID, device | RD)) return 6; // Now send ID with READ Command    
+    if (I2CGetACK(busID)) return 7; // Get ACK from EEPROM
 
     // Now receive block of data:
     for (i = 0; i < numBytes; i++) 
@@ -283,11 +288,11 @@ unsigned char EepromReadBlock(unsigned char busID, unsigned char device, unsigne
         else ptrData[i] = I2CReceiveByte(busID, true);
     }
     StopTransfer(busID);
-    return (1); // Return 1 to indicate successful read operation
+    return (0); 
 }
 
 /*******************************************************************
- *	Name:	EepromWriteByte()
+ *	Name:	WriteEEpromByte()
  *	
  *	Inputs:
  *	device - I2C address of the chip
@@ -295,7 +300,7 @@ unsigned char EepromReadBlock(unsigned char busID, unsigned char device, unsigne
  *	*ptrData - pointer to data string to be stored
  *	numBytes - numBytes - Number of bytes to be written
  *	
- *  Returns: 1 if successful, 0 if EEPROM does not ACKnowledge a command.
+ *  Returns: 0 if successful
  * 
  *	A block of data with length numBytes is sent to the EEPROM.  
  *  Data is written one byte at a time
@@ -303,39 +308,44 @@ unsigned char EepromReadBlock(unsigned char busID, unsigned char device, unsigne
  *	As each byte is written, an ACKnowledge bit is read from EEPROM
  *	
  *******************************************************************/
-unsigned char EepromWriteByte(unsigned char busID, unsigned char device, unsigned short address, unsigned char data)
+unsigned char WriteEEpromByte(unsigned char busID, unsigned char device, unsigned short address, unsigned char data)
 {
-    unsigned char addressHigh, addressLow;    
+    unsigned char addressHigh, addressLow;  
+    short retryCounter = 0;
     
     EEPROM_WP = 0;
     DelayMs(10);
 
     addressHigh = (unsigned char) ((address & 0xFF00) >> 8);
     addressLow = (unsigned char) (address & 0x00FF);
+    
+    do {
+        StartTransfer(busID, false);
+        if (TransmitOneByte(busID, device | WR))
+        {
+            if (I2CGetACK(busID) == 0) break; // Get ACK from EEPROM
+        }
+        StopTransfer(busID);
+        retryCounter++;
+    } while (retryCounter++ < NUM_EEPROM_RETRIES);
+    if (retryCounter >= 100) return 1;        
    
     StartTransfer(busID, false);
-
-    if (!TransmitOneByte(busID, device | WR)) return 0;
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    // if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM
     
-    if (!TransmitOneByte(busID, addressHigh)) return 0; // Send EEPROM high address byte
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    // if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM    
+    if (!TransmitOneByte(busID, addressHigh)) return 2; // Send EEPROM high address byte
+    if (I2CGetACK(busID)) return 3; // Get ACK from EEPROM
 
-    if (!TransmitOneByte(busID, addressLow)) return 0; // Send EEPROM low address byte
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    // if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM    
+    if (!TransmitOneByte(busID, addressLow)) return 4; // Send EEPROM low address byte
+    if (I2CGetACK(busID)) return 5; // Get ACK from EEPROM
     
-    if (!TransmitOneByte(busID, data)) return 0;
+    if (!TransmitOneByte(busID, data)) return 6;
     while(!I2CTransmissionHasCompleted(I2C1));
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    // if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM        
+    if (I2CGetACK(busID)) return 7; // Get ACK from EEPROM
 
     StopTransfer(busID);
     EEPROM_WP = 1;
     
-    return (1);
+    return (0);
 }
 
 /*  Reads a single byte from EEPROM at address
@@ -344,41 +354,42 @@ unsigned char EepromWriteByte(unsigned char busID, unsigned char device, unsigne
  *	address - 16-bit memory address to write the data to 	
  * 
  *  Output: *ptrData - pointer to data read from EEPROM 
- *  Returns: 1 if successful, 0 if EEPROM does not ACKnowledge a command.
+ *  Returns: 0 if successful
  */
 
-unsigned char EepromReadByte (unsigned char busID, unsigned char device, unsigned short address, unsigned char *ptrData) {
+unsigned char ReadEEpromByte (unsigned char busID, unsigned char device, unsigned short address, unsigned char *ptrData) {
     unsigned char addressHigh, addressLow;
     unsigned char i;
-    
+    short retryCounter = 0;
 
     addressHigh = (unsigned char) ((address & 0xFF00) >> 8);
     addressLow = (unsigned char) (address & 0x00FF);
-
-    StartTransfer(busID, false); // Send I2C START
     
-    if (!TransmitOneByte(busID, device | WR)) return 0; 
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    //if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM
+    do {
+        StartTransfer(busID, false);
+        if (TransmitOneByte(busID, device | WR))
+        {
+            if (I2CGetACK(busID) == 0) break; // Get ACK from EEPROM
+        }
+        StopTransfer(busID);
+        retryCounter++;
+    } while (retryCounter++ < NUM_EEPROM_RETRIES);
+    if (retryCounter >= 100) return 1;    
     
     if (!TransmitOneByte(busID, addressHigh)) return 0; // Send EEPROM high address byte
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    //if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM    
-    
+    if (I2CGetACK(busID)) return 2; // Get ACK from EEPROM
 
     if (!TransmitOneByte(busID, addressLow)) return 0; // Send EEPROM low address byte
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    //if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM    
+    if (I2CGetACK(busID)) return 3; // Get ACK from EEPROM
 
     StartTransfer(busID, true); // Send I2C RESTART
 
     if (!TransmitOneByte(busID, device | RD)) return 0; // Now send READ command and I2C device address
-    if (I2CGetACK(busID)) return 0; // Get ACK from EEPROM
-    //if (I2CSTATbits.ACKSTAT) return (0); // Get ACK from EEPROM
+    if (I2CGetACK(busID)) return 4; // Get ACK from EEPROM
     
     *ptrData = I2CReceiveByte(busID, true);
 
     StopTransfer(busID);
-    return (1); // Return 1 to indicate successful read operation
+    return (0); 
 }
 

@@ -51,17 +51,6 @@
  * Howard Schlunder		4/04/06	Changed for C30
  ********************************************************************/
 
-//#include "Compiler.h"
-//#include "HardwareProfile.h"
-//#include "HardwareProfile EXP16.h"
-//#include <delays.h>
-
-// PIC32MX processor
-//#define GetSystemClock()		(80000000ul)      // Hz
-//#define GetInstructionClock()	(GetSystemClock()/1)
-//#define GetPeripheralClock()	(GetInstructionClock()/1)	// Set your divider according to your Peripheral Bus Frequency configuration fuse setting
-
-
 void Delay10us(long dwCount);
 void DelayMs(long ms);
 void DelayUs(unsigned short Count);
